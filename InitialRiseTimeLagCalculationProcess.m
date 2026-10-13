@@ -61,10 +61,11 @@ classdef InitialRiseTimeLagCalculationProcess < DataProcessingProcess
                     adhAnalProc = faPack.processes_{7};
                 end
                 idSelected=ip.Results.idSelected;
+                p7 = adhAnalProc.funParams_;
                 if isempty(idSelected)
-                    tracksNA=adhAnalProc.loadChannelOutput(p.ChannelIndex,'output','tracksNA','wantFullTrack',true);
+                    tracksNA=adhAnalProc.loadChannelOutput(p7.ChannelIndex,'output','tracksNA','wantFullTrack',true);
                 else
-                    tracksNA=adhAnalProc.loadChannelOutput(p.ChannelIndex,'output','tracksNA','idSelected',idSelected,'wantFullTrack',true);
+                    tracksNA=adhAnalProc.loadChannelOutput(p7.ChannelIndex,'output','tracksNA','idSelected',idSelected,'wantFullTrack',true);
                 end
                 % numChans = numel(p.ChannelIndex);
 
@@ -74,22 +75,27 @@ classdef InitialRiseTimeLagCalculationProcess < DataProcessingProcess
                 theOtherReadProc=FAPack.processes_{iTheOtherProc};
                 forceReadProc=FAPack.processes_{iForceRead};
 
-                if ~isempty(theOtherReadProc)
-                    ampObj = load(theOtherReadProc.outFilePaths_{1,p.ChannelIndex},'tracksAmpTotal'); % the later channel has the most information.
-                    tracksAmpTotal = ampObj.tracksAmpTotal;
-                    if ~isempty(idSelected)
-                        tracksAmpTotal = tracksAmpTotal(idSelected);
-                    end
-                %     tracksAmpTotal = theOtherReadProc.loadChannelOutput(p.ChannelIndex);
+                % pTOC = theOtherReadProc.funParams_;
+                if ~isempty(theOtherReadProc) && theOtherReadProc.success_
+                    pTOC = theOtherReadProc.funParams_;
 
-                    if isfield(tracksAmpTotal,'ampTotal2')
-                        [tracksNA(:).ampTotal2] = tracksAmpTotal.ampTotal2;
-                    end
-                    if isfield(tracksAmpTotal,'amp2')
-                        [tracksNA(:).amp2] = tracksAmpTotal.amp2;
-                    end
-                    if isfield(tracksAmpTotal,'ampTotal3')
-                        [tracksNA(:).ampTotal3] = tracksAmpTotal.ampTotal3;
+                    for ii=1:numel(pTOC.ProcessIndex)
+                        ampObj = load(theOtherReadProc.outFilePaths_{ii,pTOC.ChannelIndex{ii},1},'tracksAmpTotal'); % the later channel has the most information.
+                        tracksAmpTotal = ampObj.tracksAmpTotal;
+                    %     tracksAmpTotal = theOtherReadProc.loadChannelOutput(p.ChannelIndex);
+                        
+                        if isfield(tracksAmpTotal,'ampTotal2')
+                            [tracksNA(:).ampTotal2] = tracksAmpTotal.ampTotal2;
+                        end
+                        if isfield(tracksAmpTotal,'amp2')
+                            [tracksNA(:).amp2] = tracksAmpTotal.amp2;
+                        end
+                        if isfield(tracksAmpTotal,'ampTotal3')
+                            [tracksNA(:).ampTotal3] = tracksAmpTotal.ampTotal3;
+                        end
+                        if isfield(tracksAmpTotal,'fret')
+                            [tracksNA(:).fret] = tracksAmpTotal.fret;
+                        end
                     end
                 end
 
@@ -133,10 +139,14 @@ classdef InitialRiseTimeLagCalculationProcess < DataProcessingProcess
 
                 forceReadProc=FAPack.processes_{iForceRead};
                 if ~isempty(forceReadProc)
-                    idxTracksObj = load(forceReadProc.outFilePaths_{6,p.ChannelIndex},'idxTracks');
-                    if ~isfield(idxTracksObj,'idxTracks')
+                    try
+                        idxTracksObj = load(forceReadProc.outFilePaths_{6,p.ChannelIndex},'idxTracks');
+                        if ~isfield(idxTracksObj,'idxTracks')
+                            idxTracksObj = load(forceReadProc.outFilePaths_{2,p.ChannelIndex},'idxTracks');
+                            disp('Reading idxTracks from other source. OK!')
+                        end
+                    catch
                         idxTracksObj = load(forceReadProc.outFilePaths_{2,p.ChannelIndex},'idxTracks');
-                        disp('Reading idxTracks from other source. OK!')
                     end
                     idxTracks = idxTracksObj.idxTracks;
                 end

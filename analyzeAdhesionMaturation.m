@@ -56,12 +56,10 @@ iChan = p.ChannelIndex;
 bandwidthNA = p.bandwidthNA;
 minFALengthMicron = p.minFALengthMicron;
 
-ApplyCellSegMask = p.ApplyCellSegMask;
-
 % Load Respective Process objects
-if ApplyCellSegMask
-    maskProc = MD.getProcess(p.SegCellMaskProc);
-end
+% if ApplyCellSegMask
+%     maskProc = MD.getProcess(p.SegCellMaskProc);
+% end
 detectedNAProc = MD.getProcess(p.detectedNAProc);
 trackNAProc = MD.getProcess(p.trackFAProc);
 FASegProc = MD.getProcess(p.FAsegProc);
@@ -175,7 +173,9 @@ if ~isempty(SDCProc)
     s = load(SDCProc.outFilePaths_{3,iBeadChan},'T');    
     T = s.T;
 end
-
+%% Cell mask
+maskProc = FAPackage.getProcess(3);
+ApplyCellSegMask=~isempty(maskProc);
 %% get the track if you already have it
 if foundTracks || startFromIntermediate % If this part above is already processed
 %     load(dataPath_tracksNA, 'tracksNA');
@@ -189,7 +189,7 @@ if foundTracks || startFromIntermediate % If this part above is already processe
         load(dataPath_focalAdhInfo, 'focalAdhInfo')
     end
     try
-        tracksNA = thisProc.loadChannelOutput(iChan,'output','tracksNA');
+        tracksNA = thisProc.loadChannelOutput(iChan,[],'output','tracksNA');
     catch
         progressText(0,'Loading tracksNA') % Create text & waitbar popup
         for ii=metaTrackData.numTracks:-1:1
@@ -252,7 +252,7 @@ if ~foundTracks
                             disp('All channels are combined for cell mask')
                         end
                         maskEach = arrayfun(@(x) maskProc.loadChannelOutput(x,ii),find(maskProc.checkChannelOutput),'UniformOutput',false);
-                        maskAll=reshape(cell2mat(maskEach),size(I,1),size(I,2),[]);
+                        maskAll=reshape(cell2mat(maskEach),MD.imSize_(1),MD.imSize_(2),[]);
                         mask = any(maskAll,3);
                     elseif find(maskProc.checkChannelOutput)~=iChan
                         if ii==1
@@ -278,10 +278,15 @@ if ~foundTracks
 
                 maskOnlyBand = bandMask & mask;
                 bandArea(ii) = sum(maskOnlyBand(:)); % in pixel
+                % maskOnlyBand should be shifted by SDC
+                if ~isempty(SDCProc)
+                    maskOnlyBand = imtranslate(maskOnlyBand,T(ii,2:-1:1));
+                end
 
                 % collect index of tracks which first appear at frame ii
                 idxFirstAppear = arrayfun(@(x) x.startingFrame==ii,tracksNA);
                 % now see if these tracks ever in the maskOnlyBand
+                % And I find that ...
                 for k=find(idxFirstAppear)'
                     if maskOnlyBand(round(tracksNA(k).yCoord(ii)),round(tracksNA(k).xCoord(ii)))
                         trackIdx(k) = true;
@@ -320,6 +325,11 @@ if ~foundTracks
                 masterMask(:,:,ii)=mask;
                 % mask for band from edge
                 maskOnlyBand = mask;
+                % maskOnlyBand should be shifted by SDC
+                if ~isempty(SDCProc)
+                    maskOnlyBand = imtranslate(maskOnlyBand,T(ii,2:-1:1));
+                end
+
                 bandArea(ii) = sum(maskOnlyBand(:)); % in pixel
                 % filter tracks with naMasks
                 % only deal with presence and status
@@ -344,6 +354,36 @@ if ~foundTracks
         % get rid of tracks that have out of bands...
         disp(['Total ' num2str(sum(trackIdx)) ' tracks.'])
         tracksNA = tracksNA(trackIdx);
+    else
+        %Need to have mask
+        % Cell Boundary Mask 
+        masterMask=zeros(MD.imSize_(1),MD.imSize_(2),nFrames);
+        for ii=1:nFrames
+            if ApplyCellSegMask        
+                if sum(maskProc.checkChannelOutput)>1
+                    %Combine the the multiple masks to one
+                    if ii==1
+                        disp('All channels are combined for cell mask')
+                    end
+                    maskEach = arrayfun(@(x) maskProc.loadChannelOutput(x,ii),find(maskProc.checkChannelOutput),'UniformOutput',false);
+                    maskAll=reshape(cell2mat(maskEach),size(I,1),size(I,2),[]);
+                    mask = any(maskAll,3);
+                elseif find(maskProc.checkChannelOutput)~=iChan
+                    if ii==1
+                        disp('The channel other than adhesion channel is used for cell mask')
+                    end
+                    mask = maskProc.loadChannelOutput(find(maskProc.checkChannelOutput),ii); % 1 is CCP channel
+                elseif nChans==1 || find(maskProc.checkChannelOutput)==iChan
+                    if ii==1
+                        disp('Adhesion channel is used for mask')
+                    end
+                    mask = maskProc.loadChannelOutput(iChan,ii); % 1 is CCP channel
+                end
+            else
+                mask = true(MD.imSize_);
+            end
+            masterMask(:,:,ii)=mask;
+        end        
     end
     %% add intensity of tracks including before and after NA status
     % get the movie stack
@@ -358,9 +398,35 @@ if ~foundTracks
 
     if ~startFromIntermediate
         %% reTracking
-        % get the intensity
+
+        % Majid commented these lines for the sake of optimization -
+        % 01292026 
+        % % get the intensity
+        % disp('Reading intensities with additional tracking...')
+        % tracksNA = readIntensityFromTracks(tracksNA, imgStack, 1, 'extraLength',30,'movieData',MD,'retrack',reTrack); % 1 means intensity collection from pax image
+
+        % get the intensity with optimization method selection
         disp('Reading intensities with additional tracking...')
-        tracksNA = readIntensityFromTracks(tracksNA, imgStack, 1, 'extraLength',30,'movieData',MD,'retrack',reTrack); % 1 means intensity collection from pax image
+        if isfield(p, 'optimization_method')
+            optMethod = p.optimization_method;
+        else
+            optMethod = 'none';  % default to original
+        end
+        
+        switch lower(optMethod)
+            case 'gpu'
+                disp('=== Optimization: GPU (moment-based, fastest) ===');
+                tracksNA = readIntensityFromTracks_gpuMomentBased(tracksNA, imgStack, 1, ...
+                    'extraLength', 30, 'movieData', MD, 'reTrack', reTrack);
+            case 'cpu'
+                disp('=== Optimization: CPU (parallelized, exact output) ===');
+                tracksNA = readIntensityFromTracks_cpuParallel(tracksNA, imgStack, 1, ...
+                    'extraLength', 30, 'movieData', MD, 'reTrack', reTrack);
+            otherwise  % 'none'
+                disp('=== Optimization: None (original) ===');
+                tracksNA = readIntensityFromTracks(tracksNA, imgStack, 1, ...
+                    'extraLength', 30, 'movieData', MD, 'reTrack', reTrack);
+        end
 
         %% Filter with lifeTime 
         lifeTime = arrayfun(@(x) x.endingFrameExtra-x.startingFrameExtra,tracksNA);
@@ -400,6 +466,7 @@ if ~foundTracks
     numTracks=numel(tracksNA);
     fString = ['%0' num2str(floor(log10(numTracks))+1) '.f'];
     numStr = @(trackNum) num2str(trackNum,fString);
+    trackFolderPath = [p.OutputDirectory filesep 'trackIndividual'];
     trackIndPath = @(trackNum) [trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
     
     %% SDC application to tracksNA
@@ -428,6 +495,11 @@ if ~foundTracks
 
             maskOnlyBand = bandMask & mask;
             bandArea(ii) = sum(maskOnlyBand(:)); % in pixel
+            
+            % maskOnlyBand should be shifted by SDC
+            if ~isempty(SDCProc)
+                maskOnlyBand = imtranslate(maskOnlyBand,T(ii,2:-1:1));
+            end
 
             % collect index of tracks which first appear at frame ii
     %         idxFirstAppear = arrayfun(@(x) x.startingFrameExtra==ii,tracksNA);
@@ -451,6 +523,11 @@ if ~foundTracks
             mask = masterMask(:,:,ii); 
             % mask for band from edge
             maskOnlyBand = mask;
+            % maskOnlyBand should be shifted by SDC
+            if ~isempty(SDCProc)
+                maskOnlyBand = imtranslate(maskOnlyBand,T(ii,2:-1:1));
+            end
+
             bandArea(ii) = sum(maskOnlyBand(:)); % in pixel
             % filter tracks with naMasks
             % only deal with presence and status
@@ -474,7 +551,7 @@ if ~foundTracks
     end
     toc
     % get rid of tracks that have out of bands...
-    disp(['Previous total ' num2str(sum(trackIdx)) ' tracks.'])
+    disp(['Previous total ' num2str(length(trackIdx)) ' tracks.'])
     tracksNA = tracksNA(trackIdx);
     disp(['After filtering: Total ' num2str(sum(trackIdx)) ' tracks.'])
     %%%%%    
@@ -612,7 +689,8 @@ if ~foundTracks && ~isfield(tracksNA,'faID')
 %             else
 %                 imwrite(uint16(labelAdhesion), strcat(labelTifPath,'/label',num2str(ii,iiformat),'.tif'),'Compression','none');
 %             end
-%             for k=1:numTracks
+            % for k=1:numTracks
+            
             parfor k=1:numTracks
                 curTrack=tracksNA(k);
                 if curTrack.presence(ii)
@@ -827,6 +905,9 @@ if 1
                     yCropped = curTrack.yCoord(ii);
                     % Make the line out of the fit (along the major moving
                     % direction of the adhesion
+                    if isempty(allBdPoints)
+                        continue;
+                    end
                     xmin=min(allBdPoints(:,1)); xmax=max(allBdPoints(:,1));
                     x2=xmin:xmax;
                     y2=fitobj(x2)';
@@ -863,6 +944,14 @@ if 1
                     allBdPoints = allBdPointsAll{ii};
                     xCropped = curTrack.xCoord(ii);
                     yCropped = curTrack.yCoord(ii);
+                    if isempty(allBdPoints)
+                        curTrack.distToEdge(ii) = NaN;
+                        curTrack.distToEdgeNaive(ii) = NaN;
+                        curTrack.closestBdPoint(ii,:) = [NaN NaN]; % this is lab frame of reference. (not relative to adhesion position)
+                        curTrack.closestBdPointNaive(ii,:) = [NaN NaN]; % this is lab frame of reference. (not relative to adhesion position)
+                        continue
+                    end
+                        
                     distToAdh = sqrt(sum((allBdPoints- ...
                         ones(size(allBdPoints,1),1)*[xCropped, yCropped]).^2,2));
                     [minDistToBd,indMinBdPoint] = min(distToAdh);
@@ -886,8 +975,10 @@ if 1
 
     if getEdgeRelatedFeatures
         for k=1:numTracks
-            idxZeros = tracksNA(k).closestBdPoint(:,1)==0 & tracksNA(k).closestBdPoint(:,2)==0;
-            tracksNA(k).closestBdPoint(idxZeros,:)=NaN(sum(idxZeros),2);
+            if ~isnan(any(tracksNA(k).closestBdPoint(:,1)))
+                idxZeros = tracksNA(k).closestBdPoint(:,1)==0 & tracksNA(k).closestBdPoint(:,2)==0;
+                tracksNA(k).closestBdPoint(idxZeros,:)=NaN(sum(idxZeros),2);
+            end
         end
     end
 

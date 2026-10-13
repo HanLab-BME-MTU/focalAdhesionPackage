@@ -15,7 +15,7 @@ ip.addRequired('tracksNA',@isstruct)
 ip.addOptional('splineParam',0.99,@isscalar)
 ip.addOptional('preDetecFactor',1/5,@(x)isscalar(x))
 ip.addOptional('tInterval',1,@(x)isscalar(x))
-ip.addParamValue('slaveSource','forceMag',@(x)ismember(x,{'forceMag','ampTotal2','ampTotal3'})); % collect NA tracks that ever close to cell edge
+ip.addParamValue('slaveSource','forceMag',@(x)ismember(x,{'forceMag','ampTotal2','ampTotal3','fret'})); % collect NA tracks that ever close to cell edge
 ip.parse(tracksNA,splineParam,preDetecFactor,tInterval,varargin{:});
 slaveSource=ip.Results.slaveSource;
 
@@ -73,13 +73,17 @@ for ii=1:numel(tracksNA)
                 curSlave=d;
                 curSlave(sFEE:eFEE) = ...
                  getfield(curTrack,{1},slaveSource,{sFEE:eFEE});
-                %                 curForce(isnan(curForce)) = [];
-                sCurForce_spline= csaps(tRange,curSlave,splineParam);
-                sCurForce_sd=ppval(sCurForce_spline,tRange);
-                sCurForce_sd(isnan(curSlave))=NaN;
-    %                 sCurForce = [NaN(1,numNan) sCurForce];
-                bkgMaxForce = nanmin(sCurForce_sd(eF10before:eF5after));
-                firstDecreaseTimeForce = find(sCurForce_sd<bkgMaxForce & 1:length(sCurForce_sd)>eF10before,1);
+                if all(isnan(curSlave))
+                    firstDecreaseTimeForce=NaN;
+                else
+                    %                 curForce(isnan(curForce)) = [];
+                    sCurForce_spline= csaps(tRange,curSlave,splineParam);
+                    sCurForce_sd=ppval(sCurForce_spline,tRange);
+                    sCurForce_sd(isnan(curSlave))=NaN;
+        %                 sCurForce = [NaN(1,numNan) sCurForce];
+                    bkgMaxForce = nanmin(sCurForce_sd(eF10before:eF5after));
+                    firstDecreaseTimeForce = find(sCurForce_sd<bkgMaxForce & 1:length(sCurForce_sd)>eF10before,1);
+                end
             else
                 bkgMaxForce = max(curTrack.forceMag(eF10before:eF5after));
                 firstDecreaseTimeForce = find(getfield(curTrack,slaveSource)<bkgMaxForce & 1:nTime>eF10before,1);

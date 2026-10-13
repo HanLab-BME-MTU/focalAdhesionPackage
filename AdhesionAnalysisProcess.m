@@ -44,7 +44,7 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
                     assert(iProc < length(obj.owner_.processes_), 'Invalid Process # for Cell Mask Process');
                     assert(isa(obj.owner_.getProcess(iProc), 'MaskRefinementProcess'), ['Process: ' num2str(iProc) ' not a MaskRefinementProcess!']);
                     maskProc = obj.owner_.getProcess(iProc);
-                    assert(maskProc.checkChannelOutput(obj.funParams_.ChannelIndex), 'Cell Segmentation Mask Output Not found');
+                    assert(maskProc.checkChannelOutput(maskProc.funParams_.ChannelIndex), 'Cell Segmentation Mask Output Not found');
                     % iProc = obj.owner_.getProcessIndex('MaskProcess', 'askUser', false, 'nDesired', Inf);
                 else
                     iProc = obj.owner_.getProcessIndex('MaskRefinementProcess');   
@@ -102,7 +102,7 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
             ip =inputParser;
             ip.addRequired('obj');
             ip.addRequired('iChan', @(x) obj.checkChanNum(x));
-            ip.addOptional('iFrame', [] ,@(x) obj.checkFrameNum(x));
+            ip.addOptional('iFrame', [] ,@(x) isempty(x) | obj.checkFrameNum(x));
             ip.addParameter('useCache',true,@islogical);
             ip.addParameter('output', outputList{3}, @(x) all(ismember(x,outputList)));
             ip.addParameter('wantFullTrack', false, @islogical);
@@ -124,7 +124,7 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
                     || isempty(stateAll) || isempty(startingFrameExtra) || ...
                     isempty(endingFrameExtra) || ~all(obj.finishTime_==lastFinishTime) ...
                     || strcmp(output,outputList(end))
-                try
+                % try
                     s = load(obj.outFilePaths_{1,iChan},'metaTrackData');
                     metaTrackData = s.metaTrackData;
                     fString = ['%0' num2str(floor(log10(metaTrackData.numTracks))+1) '.f'];
@@ -132,44 +132,64 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
                     % relocate metaTrackData.trackFolderPath with current
                     % directory
                     [prevProcessPath,trackIndividualName] = fileparts(metaTrackData.trackFolderPath);
+                    % temporary: it is possible that the path is messed
+                    % up during relocation. Need to redefine
+                    % trackFolderPath
                     currentProcessPath = fileparts(obj.outFilePaths_{1,iChan});
-                    if ~strcmp(prevProcessPath,currentProcessPath)
+                    if ~strcmp(prevProcessPath,currentProcessPath) || ~exist([prevProcessPath filesep trackIndividualName],'dir')
+                        trackIndividualName = 'trackIndividual';
                         metaTrackData.trackFolderPath=[currentProcessPath filesep trackIndividualName];
                         save(obj.outFilePaths_{1,iChan},'metaTrackData');
                     end
+                
                     trackIndPath = @(trackNum) [metaTrackData.trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
                     if isempty(idSelected)
                         loadingSequence=metaTrackData.numTracks:-1:1;
                     else
                         loadingSequence=idSelected;
                     end
-                    
+                    firstFrame = loadingSequence(end);
+                    numTracks = metaTrackData.numTracks;
                     jj=0;
                     if size(loadingSequence,1)>1
                         loadingSequence=loadingSequence';
                     end
-                    for ii=loadingSequence
-                        if ~isempty(idSelected)
-                            jj=jj+1;
-                            progressText((jj)/numel(loadingSequence),'Loading tracksNA') % Update text
-                        else
-                            jj=ii;
-                            progressText((numel(loadingSequence)-ii)/numel(loadingSequence),'Loading tracksNA') % Update text
+                    % Initialize tracksNA
+                    curTrackObj1 = load(trackIndPath(firstFrame),'curTrack');
+                    tracksNA(numel(loadingSequence),1)=curTrackObj1.curTrack;
+                    potentialExtraFields = setdiff(fieldnames(curTrackObj1.curTrack),...
+                        fieldnames(tracksNA));
+                    if ~isempty(potentialExtraFields)
+                        for pp=1:numel(potentialExtraFields)
+                            tracksNA(end).(potentialExtraFields{pp})=[];
                         end
-                        try
-                            curTrackObj = load(trackIndPath(ii),'curTrack');
-                        catch
-                            continue
-                        end
-                        if ii~=loadingSequence(1)
-                            potentialExtraFields = setdiff(fieldnames(curTrackObj.curTrack),fieldnames(tracksNA));
-                            if ~isempty(potentialExtraFields)
-                                for pp=1:numel(potentialExtraFields)
-                                    tracksNA(end).(potentialExtraFields{pp})=[];
-                                end
+                    end
+
+                    if isempty(idSelected)
+                        for ii=1:numTracks
+                            try
+                                curTrackObj = load(trackIndPath(ii),'curTrack');
+                            catch
+                                continue
                             end
+                            tracksNA(ii) = curTrackObj.curTrack;
                         end
-                        tracksNA(jj,1) = curTrackObj.curTrack;
+                    else
+                        for ii=loadingSequence
+%                             if ~isempty(idSelected)
+                                jj=jj+1;
+                                progressText((jj)/numel(loadingSequence),'Loading tracksNA') % Update text
+%                             else
+%                                 jj=ii;
+%                                 progressText((numel(loadingSequence)-ii)/numel(loadingSequence),'Loading tracksNA') % Update text
+%                             end
+                            try
+                                curTrackObj = load(trackIndPath(ii),'curTrack');
+                            catch
+                                continue
+                            end
+                            tracksNA(jj) = curTrackObj.curTrack;
+                        end
                     end
                     % Might need to filter out failed tracks
                     indEmptyTracks = arrayfun(@(x) isempty(x.xCoord),tracksNA);
@@ -178,35 +198,35 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
                         varargout{1} = tracksNA;
                         return
                     end
-                catch
-                    % Check if the outFilePath has tableTracksNA
-                    disp('Checking if the outFilePath has tableTracksNA...')
-                    s = load(obj.outFilePaths_{1,iChan},'tracksNA');
-                    if isfield(s,'tracksNA')
-                        disp('Found the old format. Resaving this with the new format...')
-                        % Saving with each track
-                        tracksNA = s.tracksNA;
-                        trackFolderPath = [obj.funParams_.OutputDirectory filesep 'trackIndividual'];
-                        mkdir(trackFolderPath)
-                        numTracks = numel(tracksNA);
-                        fString = ['%0' num2str(floor(log10(numTracks))+1) '.f'];
-                        numStr = @(trackNum) num2str(trackNum,fString);
-                        trackIndPath = @(trackNum) [trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
-
-                        for ii=1:numTracks
-                            curTrack = tracksNA(ii);
-                            save(trackIndPath(ii),'curTrack')
-                        end
-                        % Saving the metaTrackData
-                        metaTrackData.numTracks = numTracks;
-                        metaTrackData.trackFolderPath = trackFolderPath;
-                        metaTrackData.eachTrackName = 'curTrack';
-                        metaTrackData.fString = ['%0' num2str(floor(log10(numTracks))+1) '.f'];
-                        metaTrackData.numStr = @(trackNum) num2str(trackNum,fString);
-                        metaTrackData.trackIndPath = @(trackNum) [trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
-                        save(obj.outFilePaths_{1,iChan},'metaTrackData')
-                    end
-                end
+                % catch
+                %     % Check if the outFilePath has tableTracksNA
+                %     disp('Checking if the outFilePath has tableTracksNA...')
+                %     s = load(obj.outFilePaths_{1,iChan},'tracksNA');
+                %     if isfield(s,'tracksNA')
+                %         disp('Found the old format. Resaving this with the new format...')
+                %         % Saving with each track
+                %         tracksNA = s.tracksNA;
+                %         trackFolderPath = [obj.funParams_.OutputDirectory filesep 'trackIndividual'];
+                %         mkdir(trackFolderPath)
+                %         numTracks = numel(tracksNA);
+                %         fString = ['%0' num2str(floor(log10(numTracks))+1) '.f'];
+                %         numStr = @(trackNum) num2str(trackNum,fString);
+                %         trackIndPath = @(trackNum) [trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
+                % 
+                %         for ii=1:numTracks
+                %             curTrack = tracksNA(ii);
+                %             save(trackIndPath(ii),'curTrack')
+                %         end
+                %         % Saving the metaTrackData
+                %         metaTrackData.numTracks = numTracks;
+                %         metaTrackData.trackFolderPath = trackFolderPath;
+                %         metaTrackData.eachTrackName = 'curTrack';
+                %         metaTrackData.fString = ['%0' num2str(floor(log10(numTracks))+1) '.f'];
+                %         metaTrackData.numStr = @(trackNum) num2str(trackNum,fString);
+                %         metaTrackData.trackIndPath = @(trackNum) [trackFolderPath filesep 'track' numStr(trackNum) '.mat'];
+                %         save(obj.outFilePaths_{1,iChan},'metaTrackData')
+                %     end
+                % end
                 if numel(tracksNA)==1
                     s = struct2table(tracksNA,'AsArray',true);
                 else
@@ -306,7 +326,8 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
                         curAdhBound = bwboundaries(labelAdhesion==ii,4,'noholes');
                         adhBound{ii} = curAdhBound{1}; % strongly assumes each has only one boundary
                     end
-                    validAdhState = refineFAID(validState,iFrame); %cellfun(@(x) x(iFrame),refineFAID(validState));
+
+                    validAdhState = cellfun(@(x) x(iFrame),refineFAID(validState)); %refineFAID(validState,iFrame); 
                     
                     varargout{iout} = adhBound(validAdhState); %table2struct(table(adhBoundary, number(validState),'VariableNames',{'adhBoundary', 'number'}));                                 
                 else
@@ -414,6 +435,13 @@ classdef AdhesionAnalysisProcess < DataProcessingProcess %& DataProcessingProces
             funParams.matchWithFA = true; 
             funParams.minLifetime = 5;  % For tracks
             funParams.reTrack = true;
+            
+
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %%%Majid Added This Line
+            funParams.optimization_method = 'cpu';  % Options: 'none', 'cpu', 'gpu'
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
             funParams.getEdgeRelatedFeatures = true;
             funParams.bandwidthNA = 7;
             funParams.minFALengthMicron = 2;
